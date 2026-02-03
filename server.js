@@ -1,50 +1,16 @@
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const pool = require('./db');
+require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3000;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'vkkosher123';
 
 // Middleware
 app.use(cors());
 app.use(bodyParser.json());
-
-// Path to JSON file
-const DATA_FILE = path.join(__dirname, 'yoshon-products.json');
-
-// Verify data file exists
-if (!fs.existsSync(DATA_FILE)) {
-  console.error('Error: yoshon-products.json not found!');
-  console.error(`Expected location: ${DATA_FILE}`);
-  process.exit(1);
-}
-
-// Helper function to read products
-const readProducts = () => {
-  try {
-    const data = fs.readFileSync(DATA_FILE, 'utf8');
-    return JSON.parse(data);
-  } catch (error) {
-    console.error('Error reading products:', error);
-    return [];
-  }
-};
-
-// Helper function to write products
-const writeProducts = (products) => {
-  try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(products, null, 2), 'utf8');
-    return true;
-  } catch (error) {
-    console.error('Error writing products:', error);
-    return false;
-  }
-};
-
-// Admin password (change this to something secure)
-const ADMIN_PASSWORD = 'yoshon2024';
 
 // Middleware to check admin password
 const checkAdminPassword = (req, res, next) => {
@@ -62,11 +28,25 @@ const checkAdminPassword = (req, res, next) => {
 // ============================================
 
 // GET all products
-app.get('/api/products', (req, res) => {
+app.get('/api/products', async (req, res) => {
   try {
-    const products = readProducts();
+    const connection = await pool.getConnection();
+    const [rows] = await connection.execute(
+      'SELECT id, Brand, `Product Name`, Yoshon FROM products ORDER BY id'
+    );
+    connection.release();
+    
+    // Convert to format frontend expects
+    const products = rows.map(row => ({
+      id: row.id,
+      Brand: row.Brand,
+      'Product Name': row['Product Name'],
+      Yoshon: row.Yoshon
+    }));
+    
     res.json(products);
   } catch (error) {
+    console.error('Error fetching products:', error);
     res.status(500).json({ error: 'Failed to fetch products' });
   }
 });
@@ -76,7 +56,7 @@ app.get('/api/products', (req, res) => {
 // ============================================
 
 // ADD product
-app.post('/api/products', checkAdminPassword, (req, res) => {
+app.post('/api/products', checkAdminPassword, async (req, res) => {
   try {
     const { Brand, 'Product Name': ProductName, Yoshon } = req.body;
 
@@ -85,24 +65,20 @@ app.post('/api/products', checkAdminPassword, (req, res) => {
       return res.status(400).json({ error: 'Brand and Product Name are required' });
     }
 
-    const products = readProducts();
-    const newProduct = {
-      Brand,
-      'Product Name': ProductName,
-      Yoshon: Yoshon || 'Status N/A Yet'
-    };
+    const connection = await pool.getConnection();
+    
+    await connection.execute(
+      'INSERT INTO products (Brand, `Product Name`, Yoshon) VALUES (?, ?, ?)',
+      [Brand, ProductName, Yoshon || 'Status N/A Yet']
+    );
+    
+    const [result] = await connection.execute('SELECT COUNT(*) as count FROM products');
+    connection.release();
 
-    products.push(newProduct);
-
-    if (writeProducts(products)) {
-      res.status(201).json({
-        message: 'Product added successfully',
-        product: newProduct,
-        totalProducts: products.length
-      });
-    } else {
-      res.status(500).json({ error: 'Failed to save product' });
-    }
+    res.status(201).json({
+      message: 'Product added successfully',
+      totalProducts: result[0].count
+    });
   } catch (error) {
     console.error('Error adding product:', error);
     res.status(500).json({ error: 'Failed to add product' });
@@ -110,9 +86,9 @@ app.post('/api/products', checkAdminPassword, (req, res) => {
 });
 
 // UPDATE product
-app.put('/api/products/:index', checkAdminPassword, (req, res) => {
+app.put('/api/products/:id', checkAdminPassword, async (req, res) => {
   try {
-    const { index } = req.params;
+    const { id } = req.params;
     const { Brand, 'Product Name': ProductName, Yoshon } = req.body;
 
     // Validation
@@ -120,27 +96,24 @@ app.put('/api/products/:index', checkAdminPassword, (req, res) => {
       return res.status(400).json({ error: 'Brand and Product Name are required' });
     }
 
-    const products = readProducts();
-    const idx = parseInt(index);
+    const connection = await pool.getConnection();
+    
+    const [result] = await connection.execute(
+      'UPDATE products SET Brand = ?, `Product Name` = ?, Yoshon = ? WHERE id = ?',
+      [Brand, ProductName, Yoshon || 'Status N/A Yet', id]
+    );
 
-    if (idx < 0 || idx >= products.length) {
+    if (result.affectedRows === 0) {
+      connection.release();
       return res.status(404).json({ error: 'Product not found' });
     }
 
-    products[idx] = {
-      Brand,
-      'Product Name': ProductName,
-      Yoshon: Yoshon || 'Status N/A Yet'
-    };
+    connection.release();
 
-    if (writeProducts(products)) {
-      res.json({
-        message: 'Product updated successfully',
-        product: products[idx]
-      });
-    } else {
-      res.status(500).json({ error: 'Failed to save product' });
-    }
+    res.json({
+      message: 'Product updated successfully',
+      productId: id
+    });
   } catch (error) {
     console.error('Error updating product:', error);
     res.status(500).json({ error: 'Failed to update product' });
@@ -148,38 +121,35 @@ app.put('/api/products/:index', checkAdminPassword, (req, res) => {
 });
 
 // DELETE product
-app.delete('/api/products/:index', checkAdminPassword, (req, res) => {
+app.delete('/api/products/:id', checkAdminPassword, async (req, res) => {
   try {
-    const { index } = req.params;
-    const products = readProducts();
-    const idx = parseInt(index);
+    const { id } = req.params;
+    const connection = await pool.getConnection();
 
-    if (idx < 0 || idx >= products.length) {
+    const [result] = await connection.execute(
+      'DELETE FROM products WHERE id = ?',
+      [id]
+    );
+
+    if (result.affectedRows === 0) {
+      connection.release();
       return res.status(404).json({ error: 'Product not found' });
     }
 
-    const deletedProduct = products[idx];
-    products.splice(idx, 1);
+    connection.release();
 
-    if (writeProducts(products)) {
-      res.json({
-        message: 'Product deleted successfully',
-        product: deletedProduct,
-        totalProducts: products.length
-      });
-    } else {
-      res.status(500).json({ error: 'Failed to delete product' });
-    }
+    res.json({
+      message: 'Product deleted successfully',
+      productId: id
+    });
   } catch (error) {
     console.error('Error deleting product:', error);
     res.status(500).json({ error: 'Failed to delete product' });
   }
 });
 
-// BULK OPERATIONS
-
-// Bulk update products (for replacing entire list)
-app.post('/api/products/bulk/replace', checkAdminPassword, (req, res) => {
+// IMPORT products from JSON
+app.post('/api/products/import/json', checkAdminPassword, async (req, res) => {
   try {
     const { products } = req.body;
 
@@ -187,34 +157,57 @@ app.post('/api/products/bulk/replace', checkAdminPassword, (req, res) => {
       return res.status(400).json({ error: 'Products must be an array' });
     }
 
-    if (writeProducts(products)) {
-      res.json({
-        message: 'Products replaced successfully',
-        totalProducts: products.length
-      });
-    } else {
-      res.status(500).json({ error: 'Failed to save products' });
+    const connection = await pool.getConnection();
+
+    // Clear existing products
+    await connection.execute('DELETE FROM products');
+
+    // Insert new products
+    for (const product of products) {
+      await connection.execute(
+        'INSERT INTO products (Brand, `Product Name`, Yoshon) VALUES (?, ?, ?)',
+        [
+          product.Brand || '',
+          product['Product Name'] || '',
+          product.Yoshon || 'Status N/A Yet'
+        ]
+      );
     }
+
+    const [result] = await connection.execute('SELECT COUNT(*) as count FROM products');
+    connection.release();
+
+    res.json({
+      message: 'Products imported successfully',
+      totalProducts: result[0].count
+    });
   } catch (error) {
-    console.error('Error replacing products:', error);
-    res.status(500).json({ error: 'Failed to replace products' });
+    console.error('Error importing products:', error);
+    res.status(500).json({ error: 'Failed to import products' });
   }
 });
 
 // ============================================
-// HEALTH CHECK & INFO
+// HEALTH CHECK
 // ============================================
 
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
   try {
-    const products = readProducts();
+    const connection = await pool.getConnection();
+    const [rows] = await connection.execute('SELECT COUNT(*) as count FROM products');
+    connection.release();
+
     res.json({
       status: 'ok',
-      totalProducts: products.length,
+      totalProducts: rows[0].count,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
+    console.error('Health check error:', error);
+    res.status(500).json({ 
+      status: 'error', 
+      message: 'Database connection failed'
+    });
   }
 });
 
@@ -229,36 +222,7 @@ app.use((err, req, res, next) => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`
-╔════════════════════════════════════════╗
-║   Yoshon Admin Server Started          ║
-╚════════════════════════════════════════╝
-
-📍 API URL: http://localhost:${PORT}
-📁 Data File: ${DATA_FILE}
-🔐 Admin Password: ${ADMIN_PASSWORD}
-
-Available Routes:
-  GET    /api/products              - Get all products
-  POST   /api/products              - Add product (admin)
-  PUT    /api/products/:index       - Update product (admin)
-  DELETE /api/products/:index       - Delete product (admin)
-  GET    /api/health                - Health check
-
-Next Steps:
-1. Update your React components to use:
-   - GET http://localhost:${PORT}/api/products (public list)
-   - POST/PUT/DELETE with x-admin-password header (admin)
-
-2. Change the admin password in this file before deployment!
-
-3. Deploy with:
-   - Heroku
-   - Railway
-   - Render
-   - DigitalOcean
-   - AWS
-`);
+  console.log(` `);
 });
 
 module.exports = app;
