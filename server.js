@@ -222,7 +222,24 @@ app.use((err, req, res, next) => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log(` `);
+  console.log(`
+╔════════════════════════════════════════╗
+║   Yoshon API Server Started            ║
+║   MySQL Database Connected             ║
+╚════════════════════════════════════════╝
+
+📍 Server: http://localhost:${PORT}
+🗄️  Database: ${process.env.DB_NAME}
+🔐 Admin Password: ${ADMIN_PASSWORD}
+
+Available Routes:
+  GET    /api/products          - Get all products
+  POST   /api/products          - Add product (admin)
+  PUT    /api/products/:id      - Update product (admin)
+  DELETE /api/products/:id      - Delete product (admin)
+  POST   /api/products/import/json - Import from JSON (admin)
+  GET    /api/health            - Health check
+`);
 });
 
 module.exports = app;
