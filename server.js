@@ -32,7 +32,7 @@ app.get('/api/products', async (req, res) => {
   try {
     const connection = await pool.getConnection();
     const [rows] = await connection.execute(
-      'SELECT id, Brand, `Product Name`, Yoshon FROM products ORDER BY id'
+      'SELECT id, Brand, `Product Name`, Yoshon FROM products ORDER BY Brand ASC'
     );
     connection.release();
     
